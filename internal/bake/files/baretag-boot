@@ -1,0 +1,120 @@
+#!/usr/bin/bash
+# Render the machine inventory on the console of a CoreOS live boot.
+#
+# The baretag binary is far larger than the 256 KiB Ignition embed area of
+# a live ISO, so "baretag bake-into" appends it after the end of the image
+# and records here where it landed. Reading it back from the medium keeps the
+# ISO itself untouched: no partition table, volume descriptor or directory
+# entry is rewritten, which matters because server firmware is a lot less
+# forgiving about those than a virtual machine is.
+set -euo pipefail
+
+payload_skip=@@PAYLOAD_SKIP@@     # sectors of 2048 bytes from the start
+payload_count=@@PAYLOAD_COUNT@@   # sectors to read
+payload_bytes=@@PAYLOAD_BYTES@@   # exact length within them
+payload_sha=@@PAYLOAD_SHA256@@
+
+install_path=/usr/local/bin/baretag
+run_dir=/run/baretag
+issue_file=/etc/issue.d/99-baretag.issue
+console=${1:-/dev/tty1}
+
+log() { echo "baretag-boot: $*" >&2; }
+
+# find_device prints the block device the live image was booted from. The
+# payload lies beyond the filesystem, so a partition will not do: it has to be
+# the whole device.
+find_device() {
+    local label dev parent
+
+    label=$(sed -n 's/.*coreos\.liveiso=\([^[:space:]]*\).*/\1/p' /proc/cmdline) || true
+    if [ -z "${label}" ]; then
+        return 1
+    fi
+
+    dev=$(blkid -L "${label}" 2>/dev/null) || dev=""
+    if [ -z "${dev}" ]; then
+        dev="/dev/disk/by-label/${label}"
+    fi
+    if [ ! -b "${dev}" ]; then
+        return 1
+    fi
+
+    parent=$(lsblk -no pkname "${dev}" 2>/dev/null | head -1) || true
+    if [ -n "${parent}" ] && [ -b "/dev/${parent}" ]; then
+        dev="/dev/${parent}"
+    fi
+    echo "${dev}"
+}
+
+# extract pulls the payload off the medium and unpacks it. The checksum is
+# checked first: a short read at the end of a device is the likely failure and
+# it would otherwise produce a truncated binary that fails in a confusing way.
+extract() {
+    local dev=$1
+
+    mkdir -p "${run_dir}"
+    dd if="${dev}" bs=2048 skip="${payload_skip}" count="${payload_count}" \
+        status=none of="${run_dir}/payload.raw"
+    head -c "${payload_bytes}" "${run_dir}/payload.raw" > "${run_dir}/payload.gz"
+    rm -f "${run_dir}/payload.raw"
+
+    if ! echo "${payload_sha}  ${run_dir}/payload.gz" | sha256sum -c - >/dev/null 2>&1; then
+        log "the payload read from ${dev} does not match its checksum"
+        return 1
+    fi
+
+    mkdir -p "$(dirname "${install_path}")"
+    gunzip -c "${run_dir}/payload.gz" > "${install_path}"
+    rm -f "${run_dir}/payload.gz"
+    chmod 0755 "${install_path}"
+
+    # Executing from /usr/local/bin, which is a symlink into /var on a CoreOS
+    # system, needs a context that permits it.
+    if command -v restorecon >/dev/null 2>&1; then
+        restorecon -F "${install_path}" || log "restorecon failed, continuing"
+    elif command -v chcon >/dev/null 2>&1; then
+        chcon -t bin_t "${install_path}" || log "chcon failed, continuing"
+    fi
+}
+
+main() {
+    local dev
+    if ! dev=$(find_device); then
+        log "could not work out which device the live image was booted from"
+        exit 1
+    fi
+    log "reading the payload from ${dev} at sector ${payload_skip}"
+    extract "${dev}"
+
+    mkdir -p "${run_dir}" "$(dirname "${issue_file}")"
+
+    # The console drawing. --clear wipes the screen at the top of the banner so
+    # the drawing does not have to share the console with /etc/issue and the
+    # snippets console-login-helper-messages writes; only the login prompt
+    # follows it, which is the row --reserve holds back. --no-footer gives the
+    # symbol one more row, which is often what lets the readable JSON payload
+    # be used instead of the packed one.
+    "${install_path}" \
+        --tty "${console}" \
+        --clear \
+        --reserve 2 \
+        --no-footer \
+        --issue "${issue_file}" \
+        > "${run_dir}/console.txt"
+
+    # The unabridged report and the raw facts, for anyone who reaches a shell.
+    "${install_path}" --layout full --cols 100 --rows 200 --no-color \
+        > "${run_dir}/report.txt" || log "full report failed"
+    "${install_path}" --json > "${run_dir}/inventory.json" || log "json dump failed"
+
+    if [ -w "${console}" ]; then
+        cat "${run_dir}/console.txt" > "${console}" || log "could not write to ${console}"
+    fi
+
+    # Stdout lands in the journal, so the facts are recoverable with
+    # journalctl -u baretag even if the console has scrolled.
+    cat "${run_dir}/report.txt"
+}
+
+main "$@"

@@ -1,0 +1,29 @@
+[Unit]
+Description=Show machine inventory and a QR code on the console
+Documentation=https://github.com/mjovanovic/baretag
+# Only meaningful on a live boot, where the binary sits on the ISO.
+ConditionPathExists=/run/ostree-live
+
+# Disks and NICs have to be enumerated before there is anything to report.
+Wants=systemd-udev-settle.service
+After=systemd-udev-settle.service
+After=NetworkManager.service
+
+# agetty reads the banner once, when it starts, so the banner has to exist by
+# then or the first login screen will not show it.
+Before=getty@tty1.service
+Before=serial-getty@ttyS0.service
+Before=console-getty.service
+Before=getty.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+# A live boot with no DHCP server must not stall here, so the wait is bounded
+# and its failure is ignored.
+ExecStartPre=-/usr/bin/nm-online -s -q --timeout=20
+ExecStart=/usr/local/bin/baretag-boot /dev/tty1
+TimeoutStartSec=120
+
+[Install]
+WantedBy=multi-user.target
