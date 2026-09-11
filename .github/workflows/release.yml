@@ -1,0 +1,54 @@
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    name: Build and publish
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # Release notes are generated from the history, which needs all of it.
+          fetch-depth: 0
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Test
+        run: go test ./... -count=1
+
+      - name: Build
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          for target in linux/amd64 linux/arm64 darwin/amd64 darwin/arm64; do
+            goos=${target%/*}
+            goarch=${target#*/}
+            CGO_ENABLED=0 GOOS="$goos" GOARCH="$goarch" go build \
+              -trimpath \
+              -ldflags="-s -w -X main.version=${GITHUB_REF_NAME}" \
+              -o "dist/baretag-${goos}-${goarch}" \
+              ./cmd/baretag
+          done
+          cd dist && sha256sum baretag-* > SHA256SUMS
+          cat SHA256SUMS
+
+      # baretag-linux-amd64 is the build that gets baked into an ISO, so the
+      # checksums matter to anyone verifying what ended up on their boot media.
+      - name: Publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" \
+            --title "$GITHUB_REF_NAME" \
+            --generate-notes \
+            --verify-tag \
+            dist/baretag-* dist/SHA256SUMS
