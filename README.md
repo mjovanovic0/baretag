@@ -20,6 +20,11 @@ at the rack or through a remote console.
 - **Built-in ISO verification:** check the embedded payload, image structures,
   and changes against the original image after baking.
 
+![Baretag's report and QR code on a server's remote console](docs/console.png)
+
+*Illustration of the boot screen as seen through a BMC remote console. The QR
+code is real: scan it and decode it with `baretag decode`.*
+
 ## Quick start
 
 ### 1. Build Baretag
@@ -316,6 +321,13 @@ Tests cover hardware collection, payload encoding and decoding, console layout,
 QR rendering, and ISO structures. QR tests read generated symbols with an
 independent decoder. The hardware fixture covers a Dell PowerEdge R750 with
 four NICs and five block devices, including NVMe, SCSI, SATA, and virtio cases.
+
+The README illustration is generated rather than captured, so it stays in step
+with the renderer:
+
+```sh
+go run ./cmd/mockup > console.svg
+```
 
 Tests requiring a real CoreOS image are skipped by default. To include them:
 
