@@ -33,4 +33,17 @@ func (inv *Inventory) applyDMI(opts Options) {
 	if v := clean(readSysFile(opts.path(dmiDir, "product_uuid"))); meaningful(v) {
 		inv.UUID = v
 	}
+	if v := clean(readSysFile(opts.path(dmiDir, "bios_version"))); meaningful(v) {
+		inv.BIOSVersion = v
+	}
+
+	// An asset tag is what a datacentre's own records are keyed on, and it
+	// often carries the rack and position. The chassis one is the tag stuck to
+	// the box; the board one is a fallback.
+	for _, attr := range []string{"chassis_asset_tag", "board_asset_tag"} {
+		if v := clean(readSysFile(opts.path(dmiDir, attr))); meaningful(v) {
+			inv.AssetTag = v
+			break
+		}
+	}
 }

@@ -9,8 +9,8 @@ import (
 	"fmt"
 	"os"
 	"strings"
-
 	"syscall"
+	"time"
 
 	qrcode "github.com/skip2/go-qrcode"
 	"golang.org/x/term"
@@ -53,6 +53,7 @@ type config struct {
 	tty      string
 	reserve  int
 	root     string
+	lldp     time.Duration
 	clear    bool
 	noFooter bool
 	prefer   string
@@ -86,6 +87,7 @@ func main() {
 	flag.BoolVar(&cfg.allNICs, "all-nics", false, "include virtual interfaces that carry no address")
 	flag.BoolVar(&cfg.allDisks, "all-disks", false, "include loop, ram and device-mapper nodes")
 	flag.BoolVar(&cfg.noUdev, "no-udev", false, "do not fall back to udevadm for disk serials")
+	flag.DurationVar(&cfg.lldp, "lldp", 0, "listen this long on each live link for the switch on the other end; switches advertise every 30s, so 35s is the useful minimum")
 	flag.BoolVar(&cfg.minimal, "minimal", false, "leave model, vendor and UUID out of the QR payload to shrink the symbol")
 	flag.StringVar(&cfg.tty, "tty", "", "read the console size from this device, for example /dev/tty1")
 	flag.IntVar(&cfg.reserve, "reserve", 0, "console rows to leave free for the login prompt and other banners")

@@ -14,9 +14,25 @@ type Inventory struct {
 	Hostname  string `json:"hostname"`
 	Serial    string `json:"serial,omitempty"`
 	SerialSrc string `json:"serial_source,omitempty"`
+	AssetTag  string `json:"asset_tag,omitempty"`
 	Vendor    string `json:"vendor,omitempty"`
 	Product   string `json:"product,omitempty"`
 	UUID      string `json:"uuid,omitempty"`
+
+	// Virtual names the hypervisor when this is not a physical machine, and
+	// is empty on bare metal. A tool used to identify machines for
+	// provisioning should say which kind it is looking at.
+	Virtual string `json:"virtual,omitempty"`
+	// Firmware is uefi or bios. It decides how a machine is installed, and it
+	// explains a console too small to hold a useful symbol.
+	Firmware    string `json:"firmware,omitempty"`
+	BIOSVersion string `json:"bios_version,omitempty"`
+	Arch        string `json:"arch,omitempty"`
+	CPUs        int    `json:"cpus,omitempty"`
+	CPUModel    string `json:"cpu_model,omitempty"`
+	MemoryBytes int64  `json:"memory_bytes,omitempty"`
+	TPM         string `json:"tpm,omitempty"`
+
 	Collected string `json:"collected"`
 	NICs      []NIC  `json:"nics"`
 	Disks     []Disk `json:"disks"`
@@ -31,6 +47,10 @@ type Options struct {
 	AllDisks bool
 	// UseUdev allows falling back to udevadm when sysfs has no serial.
 	UseUdev bool
+	// LLDPWait is how long to listen for a neighbour advertisement on each
+	// link that is up. Switches send one every thirty seconds by default, so
+	// anything shorter than that will usually find nothing. Zero disables it.
+	LLDPWait time.Duration
 	// Root prefixes every sysfs and device path. It is empty in production and
 	// set in tests, so that the collectors can be pointed at a sysfs tree
 	// captured from a real server instead of the machine running the tests.
@@ -61,6 +81,8 @@ func Collect(opts Options) *Inventory {
 		inv.Hostname = h
 	}
 	inv.applyDMI(opts)
+	inv.applySystem(opts)
+	inv.applyNeighbours(opts)
 
 	return inv
 }

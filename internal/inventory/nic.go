@@ -3,9 +3,12 @@ package inventory
 import (
 	"net"
 	"os"
+	"path/filepath"
 	"sort"
 	"strconv"
 	"strings"
+
+	"github.com/mjovanovic/baretag/internal/lldp"
 )
 
 const netDir = "/sys/class/net"
@@ -17,6 +20,13 @@ type NIC struct {
 	Speed int      `json:"speed_mbps"` // 0 when the kernel cannot report a speed
 	State string   `json:"state"`      // operstate: up, down, unknown
 	IPs   []string `json:"ips,omitempty"`
+	// PCI is the slot the card sits in. Interface names are renamed by
+	// firmware and by udev; a slot address identifies the physical port.
+	PCI string `json:"pci,omitempty"`
+	// Switch and Port come from the neighbour's own LLDP advertisement, and
+	// are empty unless listening was enabled and something answered.
+	Switch string `json:"switch,omitempty"`
+	Port   string `json:"port,omitempty"`
 }
 
 // SpeedString renders the link speed the way a network engineer reads it.
@@ -90,11 +100,30 @@ func collectNICs(opts Options) []NIC {
 			nic.Speed = s
 		}
 
+		nic.PCI = pciAddress(opts, name)
+
 		nics = append(nics, nic)
 	}
 
 	sort.Slice(nics, func(i, j int) bool { return nics[i].Name < nics[j].Name })
 	return nics
+}
+
+// pciAddress finds the slot an interface's card occupies. The device link
+// points into the PCI tree, and the uevent beside it names the same slot, so
+// either will do and the second works against a captured tree.
+func pciAddress(opts Options, name string) string {
+	dev := opts.path(netDir, name, "device")
+
+	for _, line := range strings.Split(readSysFile(filepath.Join(dev, "uevent")), "\n") {
+		if slot, ok := strings.CutPrefix(strings.TrimSpace(line), "PCI_SLOT_NAME="); ok {
+			return slot
+		}
+	}
+	if target, err := os.Readlink(dev); err == nil {
+		return filepath.Base(target)
+	}
+	return ""
 }
 
 // interfaceAddrs maps interface name to its assigned addresses in CIDR form.
@@ -121,4 +150,31 @@ func interfaceAddrs() map[string][]string {
 		}
 	}
 	return out
+}
+
+// applyNeighbours asks every live link what is on the other end of it. Links
+// that are down are not offered: nothing will answer, and waiting on them
+// would hold up the whole collection for no result.
+func (inv *Inventory) applyNeighbours(opts Options) {
+	// Pointing the collectors at a captured tree must not put traffic on the
+	// machine running the tests.
+	if opts.LLDPWait <= 0 || opts.Root != "" {
+		return
+	}
+
+	var live []string
+	for _, n := range inv.NICs {
+		if n.State == "up" {
+			live = append(live, n.Name)
+		}
+	}
+
+	for name, neighbour := range lldp.Listen(live, opts.LLDPWait) {
+		for i := range inv.NICs {
+			if inv.NICs[i].Name == name {
+				inv.NICs[i].Switch = neighbour.Switch
+				inv.NICs[i].Port = neighbour.Port
+			}
+		}
+	}
 }

@@ -10,20 +10,31 @@ import (
 
 func sample() *inventory.Inventory {
 	return &inventory.Inventory{
-		Hostname:  "worker-01",
-		Serial:    "JHK3M92",
-		SerialSrc: "chassis_serial",
-		Vendor:    "Dell Inc.",
-		Product:   "PowerEdge R750",
-		UUID:      "4c4c4544-0048-4b10-8033-b4c04f4d3932",
-		Collected: "2026-09-11T15:04:05Z",
+		Hostname:    "worker-01",
+		Serial:      "JHK3M92",
+		SerialSrc:   "chassis_serial",
+		AssetTag:    "RACK14-U07",
+		Vendor:      "Dell Inc.",
+		Product:     "PowerEdge R750",
+		UUID:        "4c4c4544-0048-4b10-8033-b4c04f4d3932",
+		Firmware:    "uefi",
+		BIOSVersion: "2.15.1",
+		Arch:        "x86_64",
+		CPUs:        64,
+		CPUModel:    "Intel Xeon Gold 6338",
+		MemoryBytes: 549755813888,
+		TPM:         "2.0",
+		Collected:   "2026-09-11T15:04:05Z",
 		NICs: []inventory.NIC{
-			{Name: "eno1", MAC: "b0:7b:25:1a:2c:3d", Speed: 10000, State: "up", IPs: []string{"10.10.4.21/24", "fd00::21/64"}},
-			{Name: "eno2", MAC: "b0:7b:25:1a:2c:3e", State: "down"},
+			{Name: "eno1", MAC: "b0:7b:25:1a:2c:3d", Speed: 10000, State: "up",
+				IPs: []string{"10.10.4.21/24", "fd00::21/64"},
+				PCI: "0000:19:00.0", Switch: "tor-a-r14", Port: "Ethernet1/7"},
+			{Name: "eno2", MAC: "b0:7b:25:1a:2c:3e", State: "down", PCI: "0000:19:00.1"},
 		},
 		Disks: []inventory.Disk{
-			{Path: "/dev/nvme0n1", Size: 1920383410176, Serial: "S6EWNG0T801234", Model: "SAMSUNG MZQL21T9HCJR"},
-			{Path: "/dev/sda", Size: 960197124096},
+			{Path: "/dev/nvme0n1", Size: 1920383410176, Serial: "S6EWNG0T801234",
+				Model: "SAMSUNG MZQL21T9HCJR", Type: "nvme", WWN: "eui.3634473052801234"},
+			{Path: "/dev/sda", Size: 960197124096, Type: "hdd"},
 		},
 	}
 }
@@ -143,7 +154,21 @@ func TestMinimalDropsDescriptiveFields(t *testing.T) {
 	if got.Disks[0].Serial != "S6EWNG0T801234" {
 		t.Errorf("minimal payload lost a disk serial: %+v", got.Disks[0])
 	}
-	if got.UUID != "" || got.Disks[0].Model != "" {
+	if got.UUID != "" || got.Disks[0].Model != "" || got.CPUModel != "" || got.BIOSVersion != "" {
 		t.Errorf("minimal payload kept descriptive fields: %+v", got)
+	}
+	// What a minimal payload must not give up: how much machine there is, how
+	// it boots, and what it is cabled to.
+	if got.CPUs != 64 || got.MemoryBytes != 549755813888 || got.Firmware != "uefi" {
+		t.Errorf("minimal payload dropped sizing or firmware facts: %+v", got)
+	}
+	if got.AssetTag != "RACK14-U07" {
+		t.Errorf("minimal payload dropped the asset tag: %q", got.AssetTag)
+	}
+	if got.NICs[0].Switch != "tor-a-r14" || got.NICs[0].Port != "Ethernet1/7" {
+		t.Errorf("minimal payload dropped the neighbour: %+v", got.NICs[0])
+	}
+	if got.Disks[0].Type != "nvme" {
+		t.Errorf("minimal payload dropped the drive type: %q", got.Disks[0].Type)
 	}
 }

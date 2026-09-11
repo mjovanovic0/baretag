@@ -21,6 +21,12 @@ type Disk struct {
 	Size   int64  `json:"size_bytes"`
 	Serial string `json:"serial,omitempty"`
 	Model  string `json:"model,omitempty"`
+	// Type is nvme, ssd or hdd. Installers pick a root device by it, and
+	// nobody wants an operating system on the spinning disk.
+	Type string `json:"type,omitempty"`
+	// WWN is the world wide name, the most stable way to name a disk across
+	// reboots and controller reorderings.
+	WWN string `json:"wwn,omitempty"`
 }
 
 // SizeString renders capacity the way a disk is sold, in powers of ten, which
@@ -56,7 +62,8 @@ func collectDisks(opts Options) []Disk {
 		return nil
 	}
 
-	byID := serialsFromByID(opts)
+	byID := linksByID(opts, byIDPrefixes)
+	wwnByID := linksByID(opts, []string{"nvme-eui.", "wwn-"})
 	var disks []Disk
 
 	for _, e := range entries {
@@ -81,12 +88,54 @@ func collectDisks(opts Options) []Disk {
 
 		disk.Model = diskModel(dir)
 		disk.Serial = diskSerial(dir, name, byID, opts)
+		disk.Type = driveType(dir, name)
+		disk.WWN = diskWWN(dir, name, wwnByID)
 
 		disks = append(disks, disk)
 	}
 
 	sort.Slice(disks, func(i, j int) bool { return disks[i].Path < disks[j].Path })
 	return disks
+}
+
+// driveType tells a spinning disk from a solid state one. NVMe is called out
+// separately because it is the thing an installer usually wants.
+func driveType(dir, name string) string {
+	if strings.HasPrefix(name, "nvme") {
+		return "nvme"
+	}
+	switch readSysFile(filepath.Join(dir, "queue", "rotational")) {
+	case "0":
+		return "ssd"
+	case "1":
+		return "hdd"
+	default:
+		return ""
+	}
+}
+
+// diskWWN returns the world wide name. It is not a serial number, but it is
+// unique and stable, which is what a root device hint needs.
+func diskWWN(dir, name string, byID map[string]string) string {
+	for _, attr := range []string{"wwid", "device/wwid"} {
+		if v := clean(readSysFile(filepath.Join(dir, attr))); meaningful(v) {
+			return firstField(v)
+		}
+	}
+	if v, ok := byID[name]; ok && meaningful(v) {
+		return v
+	}
+	return ""
+}
+
+// firstField drops the vendor prefix the kernel puts in front of some world
+// wide names, such as "naa.6000..." or "t10.ATA     ...".
+func firstField(s string) string {
+	fields := strings.Fields(s)
+	if len(fields) == 0 {
+		return s
+	}
+	return fields[len(fields)-1]
 }
 
 // diskModel prefers the vendor and model pair that SCSI exposes, falling back
@@ -160,9 +209,10 @@ func vpdSerial(path string) string {
 // first. wwn links are omitted because they carry a world wide name instead.
 var byIDPrefixes = []string{"nvme-eui.", "nvme-", "ata-", "scsi-", "usb-", "mmc-", "virtio-"}
 
-// serialsFromByID resolves every /dev/disk/by-id link once and indexes the
-// serial it encodes by the kernel device name it points at.
-func serialsFromByID(opts Options) map[string]string {
+// linksByID resolves every /dev/disk/by-id link once and indexes what it
+// encodes by the kernel device name it points at. The prefixes decide which
+// kind of identifier is wanted: a serial, or a world wide name.
+func linksByID(opts Options, prefixes []string) map[string]string {
 	out := map[string]string{}
 
 	entries, err := os.ReadDir(opts.path(byIDDir))
@@ -181,7 +231,7 @@ func serialsFromByID(opts Options) map[string]string {
 			continue
 		}
 
-		for _, prefix := range byIDPrefixes {
+		for _, prefix := range prefixes {
 			if !strings.HasPrefix(e.Name(), prefix) {
 				continue
 			}

@@ -18,15 +18,28 @@ import (
 // Decode turns this back into the long form, so nothing downstream has to know
 // about the abbreviations.
 type wire struct {
-	H  string  `json:"h,omitempty"`  // hostname
-	S  string  `json:"s,omitempty"`  // serial
-	SS string  `json:"ss,omitempty"` // which DMI field the serial came from
-	VN string  `json:"vn,omitempty"` // vendor
-	P  string  `json:"p,omitempty"`  // product
-	U  string  `json:"u,omitempty"`  // product uuid
-	T  string  `json:"t,omitempty"`  // collection time
-	N  [][]any `json:"n,omitempty"`  // name, mac, speed, state, ips
-	D  [][]any `json:"d,omitempty"`  // path, size, serial, model
+	H  string `json:"h,omitempty"`  // hostname
+	S  string `json:"s,omitempty"`  // serial
+	SS string `json:"ss,omitempty"` // which DMI field the serial came from
+	AT string `json:"at,omitempty"` // asset tag
+	VN string `json:"vn,omitempty"` // vendor
+	P  string `json:"p,omitempty"`  // product
+	U  string `json:"u,omitempty"`  // product uuid
+	VT string `json:"vt,omitempty"` // hypervisor, empty on bare metal
+	FW string `json:"fw,omitempty"` // uefi or bios
+	BV string `json:"bv,omitempty"` // bios version
+	A  string `json:"a,omitempty"`  // architecture
+	C  int    `json:"c,omitempty"`  // logical cpus
+	CM string `json:"cm,omitempty"` // cpu model
+	M  int64  `json:"m,omitempty"`  // memory in bytes
+	TP string `json:"tp,omitempty"` // tpm version
+	T  string `json:"t,omitempty"`  // collection time
+
+	// Device rows are arrays so the field names are not repeated once per
+	// device. Positions are fixed: a field that is not wanted is blanked
+	// rather than removed, because the reader works by index.
+	N [][]any `json:"n,omitempty"` // name, mac, speed, state, ips, pci, switch, port
+	D [][]any `json:"d,omitempty"` // path, size, serial, model, type, wwn
 }
 
 // trimTrailing drops empty values from the end of a device row. A disk with no
@@ -51,22 +64,43 @@ func trimTrailing(row []any) []any {
 // descriptive extras are dropped, keeping only the facts needed to identify the
 // machine and its parts.
 func toWire(inv *inventory.Inventory, minimal bool) *wire {
-	w := &wire{H: inv.Hostname, S: inv.Serial, T: inv.Collected}
+	w := &wire{
+		H:  inv.Hostname,
+		S:  inv.Serial,
+		AT: inv.AssetTag,
+		VT: inv.Virtual,
+		FW: inv.Firmware,
+		A:  inv.Arch,
+		C:  inv.CPUs,
+		M:  inv.MemoryBytes,
+		T:  inv.Collected,
+	}
+	// What minimal gives up is description. How much machine there is, how it
+	// boots and what it is cabled to are what the inventory is for, so they
+	// stay whatever the console can hold.
 	if !minimal {
 		w.SS, w.VN, w.P, w.U = inv.SerialSrc, inv.Vendor, inv.Product, inv.UUID
+		w.BV, w.CM, w.TP = inv.BIOSVersion, inv.CPUModel, inv.TPM
 	}
 
 	for _, n := range inv.NICs {
+		pci := n.PCI
+		if minimal {
+			pci = ""
+		}
 		w.N = append(w.N, trimTrailing([]any{
 			n.Name, n.MAC, n.Speed, n.State, strings.Join(n.IPs, ","),
+			pci, n.Switch, n.Port,
 		}))
 	}
 	for _, d := range inv.Disks {
-		row := []any{d.Path, d.Size, d.Serial, d.Model}
+		model, wwn := d.Model, d.WWN
 		if minimal {
-			row = row[:3]
+			model, wwn = "", ""
 		}
-		w.D = append(w.D, trimTrailing(row))
+		w.D = append(w.D, trimTrailing([]any{
+			d.Path, d.Size, d.Serial, model, d.Type, wwn,
+		}))
 	}
 	return w
 }
@@ -75,21 +109,33 @@ func toWire(inv *inventory.Inventory, minimal bool) *wire {
 // because trailing empty fields were trimmed away on the way out.
 func (w *wire) toInventory() *inventory.Inventory {
 	inv := &inventory.Inventory{
-		Hostname:  w.H,
-		Serial:    w.S,
-		SerialSrc: w.SS,
-		Vendor:    w.VN,
-		Product:   w.P,
-		UUID:      w.U,
-		Collected: w.T,
+		Hostname:    w.H,
+		Serial:      w.S,
+		SerialSrc:   w.SS,
+		AssetTag:    w.AT,
+		Vendor:      w.VN,
+		Product:     w.P,
+		UUID:        w.U,
+		Virtual:     w.VT,
+		Firmware:    w.FW,
+		BIOSVersion: w.BV,
+		Arch:        w.A,
+		CPUs:        w.C,
+		CPUModel:    w.CM,
+		MemoryBytes: w.M,
+		TPM:         w.TP,
+		Collected:   w.T,
 	}
 
 	for _, row := range w.N {
 		nic := inventory.NIC{
-			Name:  str(row, 0),
-			MAC:   str(row, 1),
-			Speed: num(row, 2),
-			State: str(row, 3),
+			Name:   str(row, 0),
+			MAC:    str(row, 1),
+			Speed:  num(row, 2),
+			State:  str(row, 3),
+			PCI:    str(row, 5),
+			Switch: str(row, 6),
+			Port:   str(row, 7),
 		}
 		if ips := str(row, 4); ips != "" {
 			nic.IPs = strings.Split(ips, ",")
@@ -105,6 +151,8 @@ func (w *wire) toInventory() *inventory.Inventory {
 			Size:   int64(num(row, 1)),
 			Serial: str(row, 2),
 			Model:  str(row, 3),
+			Type:   str(row, 4),
+			WWN:    str(row, 5),
 		})
 	}
 	return inv

@@ -95,15 +95,21 @@ main() {
     # follows it, which is the row --reserve holds back. --no-footer gives the
     # symbol one more row, which is often what lets the readable JSON payload
     # be used instead of the packed one.
+    # Listening for LLDP costs the better part of a minute, because a switch
+    # only advertises every thirty seconds. It is worth it here: which switch
+    # port a machine is cabled to is the one fact that cannot be read out of
+    # the machine, and this is the moment somebody is looking at the console.
     "${install_path}" \
         --tty "${console}" \
         --clear \
         --reserve 2 \
         --no-footer \
+        --lldp 35s \
         --issue "${issue_file}" \
         > "${run_dir}/console.txt"
 
     # The unabridged report and the raw facts, for anyone who reaches a shell.
+    # The neighbours were already found above; asking again would wait afresh.
     "${install_path}" --layout full --cols 100 --rows 200 --no-color \
         > "${run_dir}/report.txt" || log "full report failed"
     "${install_path}" --json > "${run_dir}/inventory.json" || log "json dump failed"

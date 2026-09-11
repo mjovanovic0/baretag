@@ -28,8 +28,20 @@ func Report(inv *inventory.Inventory, width int) string {
 		serial = fmt.Sprintf("%s  (%s)", inv.Serial, inv.SerialSrc)
 	}
 	writeField(&sb, "Serial", serial)
-	if inv.Vendor != "" || inv.Product != "" {
-		writeField(&sb, "Model", strings.TrimSpace(inv.Vendor+" "+inv.Product))
+	if inv.AssetTag != "" {
+		writeField(&sb, "Asset tag", inv.AssetTag)
+	}
+	if model := strings.TrimSpace(inv.Vendor + " " + inv.Product); model != "" {
+		if inv.Virtual != "" {
+			model += "  (" + inv.Virtual + ")"
+		}
+		writeField(&sb, "Model", model)
+	}
+	if hw := hardwareLine(inv); hw != "" {
+		writeField(&sb, "Hardware", hw)
+	}
+	if fw := firmwareLine(inv); fw != "" {
+		writeField(&sb, "Firmware", fw)
 	}
 	if inv.UUID != "" {
 		writeField(&sb, "UUID", inv.UUID)
@@ -37,7 +49,7 @@ func Report(inv *inventory.Inventory, width int) string {
 	writeField(&sb, "Collected", inv.Collected)
 
 	sb.WriteString("\n" + section("NETWORK INTERFACES", len(inv.NICs), width) + "\n")
-	nicRows := [][]string{{"NAME", "MAC", "SPEED", "STATE", "ADDRESSES"}}
+	nicRows := [][]string{{"NAME", "MAC", "SPEED", "STATE", "ADDRESSES", "NEIGHBOUR"}}
 	for _, n := range inv.NICs {
 		nicRows = append(nicRows, []string{
 			n.Name,
@@ -45,16 +57,18 @@ func Report(inv *inventory.Inventory, width int) string {
 			n.SpeedString(),
 			n.State,
 			orDash(strings.Join(n.IPs, " ")),
+			orDash(neighbour(n)),
 		})
 	}
 	writeTable(&sb, nicRows, width)
 
 	sb.WriteString("\n" + section("DISKS", len(inv.Disks), width) + "\n")
-	diskRows := [][]string{{"DEVICE", "SIZE", "SERIAL", "MODEL"}}
+	diskRows := [][]string{{"DEVICE", "SIZE", "TYPE", "SERIAL", "MODEL"}}
 	for _, d := range inv.Disks {
 		diskRows = append(diskRows, []string{
 			d.Path,
 			d.SizeString(),
+			orDash(d.Type),
 			orDash(d.Serial),
 			orDash(d.Model),
 		})
@@ -62,6 +76,60 @@ func Report(inv *inventory.Inventory, width int) string {
 	writeTable(&sb, diskRows, width)
 
 	return sb.String()
+}
+
+// neighbour renders what LLDP heard on a link as "switch port".
+func neighbour(n inventory.NIC) string {
+	return strings.TrimSpace(n.Switch + " " + n.Port)
+}
+
+// hardwareLine summarises how much machine this is.
+func hardwareLine(inv *inventory.Inventory) string {
+	var parts []string
+	if inv.CPUs > 0 {
+		cpu := fmt.Sprintf("%d CPU", inv.CPUs)
+		if inv.CPUModel != "" {
+			cpu += " " + inv.CPUModel
+		}
+		parts = append(parts, cpu)
+	}
+	if inv.MemoryBytes > 0 {
+		parts = append(parts, memoryString(inv.MemoryBytes)+" RAM")
+	}
+	if inv.Arch != "" {
+		parts = append(parts, inv.Arch)
+	}
+	return strings.Join(parts, ", ")
+}
+
+// firmwareLine gathers the facts that decide how a machine is installed.
+func firmwareLine(inv *inventory.Inventory) string {
+	var parts []string
+	if inv.Firmware != "" {
+		parts = append(parts, inv.Firmware)
+	}
+	if inv.BIOSVersion != "" {
+		parts = append(parts, "BIOS "+inv.BIOSVersion)
+	}
+	if inv.TPM != "" {
+		parts = append(parts, "TPM "+inv.TPM)
+	}
+	return strings.Join(parts, ", ")
+}
+
+// memoryString renders memory in powers of two, which is how it is fitted and
+// sold, unlike a disk.
+func memoryString(n int64) string {
+	const unit = 1024
+	if n < unit {
+		return fmt.Sprintf("%dB", n)
+	}
+	div, exp := int64(unit), 0
+	for v := n / unit; v >= unit; v /= unit {
+		div *= unit
+		exp++
+	}
+	return fmt.Sprintf("%.0f%ciB", float64(n)/float64(div), "KMGTPE"[exp])
 }
 
 func section(title string, count, width int) string {
@@ -140,29 +208,78 @@ func ReportCompact(inv *inventory.Inventory, width int) string {
 	var sb strings.Builder
 
 	head := "HOST " + orDash(inv.Hostname) + "   SERIAL " + orDash(inv.Serial)
+	if inv.AssetTag != "" {
+		head += "   ASSET " + inv.AssetTag
+	}
 	if model := strings.TrimSpace(inv.Vendor + " " + inv.Product); model != "" {
 		head += "   " + model
 	}
 	sb.WriteString(truncate(head, width) + "\n")
 
+	if sys := compactSystem(inv); sys != "" {
+		sb.WriteString(truncate(sys, width) + "\n")
+	}
+
 	for _, n := range inv.NICs {
-		line := fmt.Sprintf("NIC %s %s %s %s %s",
-			n.Name, orDash(n.MAC), n.SpeedString(), n.State, strings.Join(n.IPs, ","))
+		line := fmt.Sprintf("NIC %s %s %s %s %s %s",
+			n.Name, orDash(n.MAC), n.SpeedString(), n.State,
+			strings.Join(n.IPs, ","), neighbourCompact(n))
 		sb.WriteString(truncate(strings.TrimRight(line, " "), width) + "\n")
 	}
 	for _, d := range inv.Disks {
-		line := fmt.Sprintf("DSK %s %s %s", d.Path, d.SizeString(), orDash(d.Serial))
-		sb.WriteString(truncate(line, width) + "\n")
+		line := fmt.Sprintf("DSK %s %s %s %s",
+			d.Path, d.SizeString(), orDash(d.Type), orDash(d.Serial))
+		sb.WriteString(truncate(strings.TrimRight(line, " "), width) + "\n")
 	}
 
 	return sb.String()
 }
 
+// compactSystem is the one line worth spending on the machine as a whole.
+func compactSystem(inv *inventory.Inventory) string {
+	var parts []string
+	if inv.CPUs > 0 {
+		parts = append(parts, fmt.Sprintf("%dcpu", inv.CPUs))
+	}
+	if inv.MemoryBytes > 0 {
+		parts = append(parts, memoryString(inv.MemoryBytes))
+	}
+	if inv.Arch != "" {
+		parts = append(parts, inv.Arch)
+	}
+	if inv.Firmware != "" {
+		parts = append(parts, inv.Firmware)
+	}
+	if inv.Virtual != "" {
+		parts = append(parts, inv.Virtual)
+	}
+	if len(parts) == 0 {
+		return ""
+	}
+	return "SYS " + strings.Join(parts, " ")
+}
+
+// neighbourCompact renders a neighbour as switch/port, which reads as one
+// token on a crowded line.
+func neighbourCompact(n inventory.NIC) string {
+	switch {
+	case n.Switch != "" && n.Port != "":
+		return n.Switch + "/" + n.Port
+	case n.Switch != "":
+		return n.Switch
+	default:
+		return n.Port
+	}
+}
+
 // ReportIdentity is the last fallback: just enough to tell two racked machines
 // apart, leaving every remaining console row to the QR code.
 func ReportIdentity(inv *inventory.Inventory, width int) string {
-	line := fmt.Sprintf("HOST %s   SERIAL %s   %d NIC / %d disk",
-		orDash(inv.Hostname), orDash(inv.Serial), len(inv.NICs), len(inv.Disks))
+	line := fmt.Sprintf("HOST %s   SERIAL %s", orDash(inv.Hostname), orDash(inv.Serial))
+	if sys := compactSystem(inv); sys != "" {
+		line += "   " + strings.TrimPrefix(sys, "SYS ")
+	}
+	line += fmt.Sprintf("   %d NIC / %d disk", len(inv.NICs), len(inv.Disks))
 	return truncate(line, width) + "\n"
 }
 

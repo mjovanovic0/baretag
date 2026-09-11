@@ -1,0 +1,9 @@
+processor	: 0
+vendor_id	: GenuineIntel
+model name	: Intel(R) Xeon(R) Gold 6338 CPU @ 2.00GHz
+cpu MHz		: 2000.000
+
+processor	: 1
+vendor_id	: GenuineIntel
+model name	: Intel(R) Xeon(R) Gold 6338 CPU @ 2.00GHz
+cpu MHz		: 2000.000

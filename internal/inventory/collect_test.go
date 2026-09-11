@@ -1,7 +1,9 @@
 package inventory
 
 import (
+	"strings"
 	"testing"
+	"time"
 )
 
 // opts points the collectors at the captured sysfs tree in testdata, which
@@ -148,5 +150,103 @@ func TestAllNICsIncludesVirtualInterfaces(t *testing.T) {
 	}
 	if !found {
 		t.Error("--all-nics did not report bond0")
+	}
+}
+
+func TestSystemFacts(t *testing.T) {
+	inv := Collect(opts())
+
+	if inv.CPUs != 64 {
+		t.Errorf("CPUs = %d, want 64 from the 0-63 range the kernel publishes", inv.CPUs)
+	}
+	if !strings.Contains(inv.CPUModel, "Xeon") {
+		t.Errorf("CPUModel = %q", inv.CPUModel)
+	}
+	// 536608768 kB as the kernel reports it, in bytes.
+	if want := int64(536608768) * 1024; inv.MemoryBytes != want {
+		t.Errorf("MemoryBytes = %d, want %d", inv.MemoryBytes, want)
+	}
+	if inv.Firmware != "uefi" {
+		t.Errorf("Firmware = %q, want uefi; the fixture has /sys/firmware/efi", inv.Firmware)
+	}
+	if inv.TPM != "2.0" {
+		t.Errorf("TPM = %q, want 2.0", inv.TPM)
+	}
+	if inv.AssetTag != "RACK14-U07" {
+		t.Errorf("AssetTag = %q", inv.AssetTag)
+	}
+	if inv.BIOSVersion != "2.15.1" {
+		t.Errorf("BIOSVersion = %q", inv.BIOSVersion)
+	}
+	// The fixture is a Dell, so nothing should claim it is a virtual machine.
+	if inv.Virtual != "" {
+		t.Errorf("Virtual = %q, want empty on a PowerEdge", inv.Virtual)
+	}
+	// Architecture describes the kernel this binary is running on rather than
+	// the captured tree, so only its presence can be asserted here.
+	if inv.Arch == "" {
+		t.Error("Arch is empty")
+	}
+}
+
+func TestDiskTypeAndWWN(t *testing.T) {
+	byPath := map[string]Disk{}
+	for _, d := range Collect(opts()).Disks {
+		byPath[d.Path] = d
+	}
+
+	cases := []struct{ path, typ, wwn, why string }{
+		{"/dev/nvme0n1", "nvme", "eui.3634473052801234", "wwid on the block device"},
+		{"/dev/sda", "ssd", "naa.6d0946606b1b2c002b9f0e1a3c4d5e6f", "wwid under the SCSI device"},
+		{"/dev/sdb", "hdd", "0x5002538f31a1b2c3", "the udev wwn- link"},
+	}
+	for _, c := range cases {
+		got, ok := byPath[c.path]
+		if !ok {
+			t.Errorf("%s missing", c.path)
+			continue
+		}
+		if got.Type != c.typ {
+			t.Errorf("%s type = %q, want %q", c.path, got.Type, c.typ)
+		}
+		if got.WWN != c.wwn {
+			t.Errorf("%s wwn = %q, want %q (from %s)", c.path, got.WWN, c.wwn, c.why)
+		}
+	}
+}
+
+func TestNICPCIAddress(t *testing.T) {
+	byName := map[string]NIC{}
+	for _, n := range Collect(opts()).NICs {
+		byName[n.Name] = n
+	}
+
+	// The slot survives a rename, which the interface name does not.
+	for name, want := range map[string]string{
+		"eno1":   "0000:19:00.0",
+		"ens3f1": "0000:5e:00.1",
+	} {
+		if got := byName[name].PCI; got != want {
+			t.Errorf("%s PCI = %q, want %q", name, got, want)
+		}
+	}
+}
+
+// TestNeighboursAreNotSoughtAgainstAFixture makes sure pointing the collectors
+// at a captured tree never puts traffic on the machine running the tests.
+func TestNeighboursAreNotSoughtAgainstAFixture(t *testing.T) {
+	o := opts()
+	o.LLDPWait = time.Hour // would hang for an hour if it were honoured
+
+	done := make(chan struct{})
+	go func() {
+		Collect(o)
+		close(done)
+	}()
+
+	select {
+	case <-done:
+	case <-time.After(10 * time.Second):
+		t.Fatal("collection listened for neighbours despite reading a captured tree")
 	}
 }
