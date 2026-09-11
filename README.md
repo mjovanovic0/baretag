@@ -15,6 +15,8 @@ at the rack or through a remote console.
 - **Bootable workflow:** add Baretag to a CoreOS live ISO with one command.
 - **Portable results:** export JSON or decode a scanned QR payload on your
   workstation.
+- **Cabling discovery:** learn which switch and which port every live
+  interface is connected to, from the switch's own LLDP advertisement.
 - **Adaptive display:** fit the report and QR codes to the available console,
   using compression and multiple symbols when needed.
 - **Built-in ISO verification:** check the embedded payload, image structures,
@@ -119,9 +121,20 @@ interface list.
 
 | Category | Fields |
 | --- | --- |
-| Machine | Hostname, serial number and its source, vendor, product, UUID, collection timestamp. |
-| Network interfaces | Name, MAC address, link speed, link state, and assigned IP addresses. |
-| Disks | Device path, capacity in bytes, serial number, and model. |
+| Machine | Hostname, serial number and its source, asset tag, vendor, product, UUID, collection timestamp. |
+| Platform | Logical CPU count and model, installed memory, architecture, firmware mode (UEFI or legacy BIOS), BIOS version, TPM version, and the hypervisor when the machine is virtual. |
+| Network interfaces | Name, MAC address, link speed, link state, assigned IP addresses, PCI slot, and the neighbouring switch and port. |
+| Disks | Device path, capacity in bytes, serial number, model, drive type (NVMe, SSD or HDD), and world-wide name. |
+
+The platform fields come from `/proc/cpuinfo`, `/proc/meminfo`,
+`/sys/devices/system/cpu`, `/sys/firmware/efi` and `/sys/class/tpm`. Asset tag
+and BIOS version come from `/sys/class/dmi/id`. A machine is reported as
+virtual when its DMI vendor or product names a hypervisor.
+
+Drive type comes from `/sys/block/*/queue/rotational`, with NVMe reported
+separately because installers select on it. The world-wide name is read from
+`wwid` attributes or the `wwn-` link udev creates; it is not a serial number,
+but it is the most stable way to name a disk.
 
 Machine identity comes from `/sys/class/dmi/id`. Baretag chooses the first
 meaningful chassis, product, or board serial, in that order, and ignores firmware
@@ -141,6 +154,26 @@ are excluded by default.
 
 Use `--all-nics` or `--all-disks` to broaden collection, and `--no-udev` to disable
 the external `udevadm` fallback. Loopback interfaces remain excluded.
+
+### Neighbouring switches
+
+Which switch port a machine is cabled to is the one fact that cannot be read
+out of the machine itself, and it is what turns a rack of identical boxes into
+something you can verify without tracing cables. Baretag learns it by listening
+for the advertisement the switch sends down each live link.
+
+This takes time. Switches advertise every thirty seconds by default, so a
+shorter wait usually hears nothing:
+
+```sh
+sudo ./dist/baretag-linux-amd64 --lldp 35s
+```
+
+The boot service uses `--lldp 35s`, which adds that long to the boot before the
+report appears. Interfaces that are down are never listened on. An interface
+that stays absent from the results is unplugged, facing a switch with LLDP
+disabled, or simply was not advertised to in time; none of these is an error
+and none of them stops the rest of the report.
 
 ## QR payloads
 
@@ -290,6 +323,7 @@ baretag verify-iso <iso>           Verify an existing baked image
 | `--all-nics` | Include virtual interfaces normally filtered out. |
 | `--all-disks` | Include block devices normally filtered out. |
 | `--no-udev` | Disable the `udevadm` fallback for disk identifiers. |
+| `--lldp <duration>` | Listen this long on each live link for the neighbouring switch. Off by default. |
 | `--root <path>` | Read filesystem attributes from a captured tree. |
 
 ### Rendering

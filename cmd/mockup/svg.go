@@ -7,7 +7,7 @@ import (
 
 const (
 	canvasW = 1220
-	canvasH = 900
+	canvasH = 980
 
 	winX, winY = 16, 16
 	winW, winH = canvasW - 2*winX, canvasH - 2*winY
